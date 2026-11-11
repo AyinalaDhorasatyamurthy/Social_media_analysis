@@ -165,26 +165,22 @@ docker compose up -d --build
 
 ### Option C: Jenkins CI/CD Pipeline
 
-[`Jenkinsfile`](Jenkinsfile) defines the automated Continuous Integration / Delivery pipeline so every push is tested, built into immutable Docker images, and smoke-tested automatically before anyone deploys it.
+[`Jenkinsfile`](Jenkinsfile) defines a cross-platform (Windows `bat` + Linux/macOS `sh`) Continuous Integration pipeline so every push is tested, built into immutable Docker images (`COMPOSE_PROJECT_NAME=social_media_analysis`), and smoke-tested automatically before deployment.
 
 #### Stage-by-Stage Flow in [`Jenkinsfile`](Jenkinsfile)
 
 | Stage | What Runs | Why It Is Important |
 |---|---|---|
 | **1. Checkout SCM** | `checkout scm` | Pulls the exact commit and branch that triggered Jenkins. |
-| **2. Tooling Verification** | `docker --version`, `docker compose version`, `git --version` | Fails fast if the Jenkins agent lacks Docker CLI, Compose v2, or Git before spending time installing dependencies. |
-| **3. Regression & Unit Tests** | `pip install -r requirements.txt` + `python scripts/full_detail_test.py --inprocess` | Boots Flask in-process (`app.test_client()`) and verifies all **65 category x country recommendation combinations** (category purity, local prioritization, valid thumbnails) without needing a background daemon or live API quota. |
-| **4. Build Docker Images** | `docker compose build --pull` + tags `${BUILD_NUMBER}-${GIT_COMMIT}` | Rebuilds both `social_media_analysis-backend` and `social_media_analysis-frontend` cleanly using `.dockerignore` and stamps reproducible build tags alongside `:latest`. |
-| **5. Integration Smoke Test** | `docker compose up -d` -> `sleep 15` -> `curl -fsS http://localhost:5000/ping` & `http://localhost:3000/` | Launches real containers together, verifies MongoDB healthcheck -> Flask API boot -> Nginx frontend serving HTTP 200. |
-| **`post { always }`** | `docker compose down --remove-orphans \|\| true` | Guarantees ephemeral CI containers are always cleaned up even if a stage fails, preventing port `3000`/`5000`/`27018` leaks across builds. |
+| **2. Tooling Verification** | `docker`, `docker compose`, `git`, `python` `--version` | Fails fast if the Jenkins agent lacks Docker CLI, Compose v2, Git, or Python before installing dependencies. |
+| **3. Regression & Unit Tests** | `pip install -r requirements.txt` + NLTK lexicons + `scripts/full_detail_test.py --inprocess` + `python -m pytest` | Boots Flask in-process and verifies all **65 category x country recommendation combinations** plus all unit tests without needing MongoDB or a live API quota. |
+| **4. Build Docker Images** | `docker compose build` + tags `${BUILD_NUMBER}-${GIT_COMMIT}` | Rebuilds `social_media_analysis-backend` and `social_media_analysis-frontend` using `.dockerignore` and stamps reproducible build tags alongside `:latest`. |
+| **5. Integration Smoke Test** | `docker compose up -d` -> health-poll `http://127.0.0.1:5000/ping`, `:3000/`, & `:3000/api/ping` | Launches MongoDB + Flask + Nginx together and verifies both direct backend health and Nginx's same-origin `/api/` reverse proxy return HTTP 200. |
+| **`post { always }`** | `docker compose down --remove-orphans` | Guarantees ephemeral CI containers are always cleaned up even if a stage fails, preventing port `3000`/`5000`/`27018` leaks across builds. |
 
-#### Running Jenkins Locally via Docker (Optional)
-1. Start Jenkins with Docker CLI access or configure a Multibranch / Pipeline job pointing to your GitHub repo (`feat/canonicalize-layout` or `main`).
-2. Set **Script Path** to `Jenkinsfile` (or `Social_media_analysis/Jenkinsfile` depending on repository root).
-3. You can also run the additional unit tests manually or add them to the test step:
-   ```powershell
-   python -m pytest
-   ```
+#### Running Jenkins on Windows (Recommended Agent Setup)
+1. In Jenkins UI, open **Manage Jenkins -> Nodes** (or **Set up an agent** on the welcome screen) and launch a local Windows agent in your normal user PowerShell session so Jenkins inherits your Docker Desktop, Python, Git, and Minikube PATH/permissions cleanly.
+2. Create a **Pipeline** job (`New Item -> Pipeline`), select **Pipeline script from SCM -> Git**, set Repository URL to your GitHub repo (`feat/canonicalize-layout` or `main`), and keep **Script Path** as `Jenkinsfile`.
 
 ---
 
