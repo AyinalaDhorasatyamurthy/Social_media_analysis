@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 recom_bp = Blueprint('recommendations', __name__)
 CORS(recom_bp, resources={r"/*": {"origins": "*"}})
 
+# Initialize MongoDB collection
+mongo_client = None
+youtube_collection = None
+try:
+    mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=2500)
+    db = mongo_client['network']
+    youtube_collection = db['youtube']
+except Exception as e:
+    logger.warning(f"MongoDB connection init warning in recom: {e}")
+
 # YouTube Categories
 YOUTUBE_CATEGORIES = {
     "1": "Film & Animation",
@@ -34,6 +44,33 @@ YOUTUBE_CATEGORIES = {
     "28": "Science & Technology"
 }
 
+# Country Filter Definitions
+SUPPORTED_COUNTRIES = [
+    {"code": "ALL", "name": "Global / All", "flag": "🌐"},
+    {"code": "IN", "name": "India", "flag": "🇮🇳"},
+    {"code": "US", "name": "United States", "flag": "🇺🇸"},
+    {"code": "GB", "name": "United Kingdom", "flag": "🇬🇧"},
+    {"code": "CA", "name": "Canada", "flag": "🇨🇦"},
+    {"code": "AU", "name": "Australia", "flag": "🇦🇺"},
+    {"code": "DE", "name": "Germany", "flag": "🇩🇪"},
+    {"code": "FR", "name": "France", "flag": "🇫🇷"},
+    {"code": "JP", "name": "Japan", "flag": "🇯🇵"},
+    {"code": "KR", "name": "South Korea", "flag": "🇰🇷"},
+    {"code": "BR", "name": "Brazil", "flag": "🇧🇷"}
+]
+
+SAMPLE_CHANNELS = [
+    {
+        'channel_id': 'UCX6OQ3DkcsbYNE6H8uQQuVA',
+        'channel_name': 'MrBeast',
+        'description': 'SUBSCRIBE FOR A COOKIE!',
+        'subscriber_count': 524000000,
+        'video_count': 1011,
+        'view_count': 145347938308,
+        'country': 'US'
+    }
+]
+
 def get_youtube_service():
     try:
         return build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
@@ -41,89 +78,142 @@ def get_youtube_service():
         logger.error(f"Error building YouTube service: {e}")
         return None
 
-def search_channels_by_category(youtube, category_id, max_results=15):
+CAT_KEYWORDS = {
+    "1": ["film", "animation", "movie", "cinema", "trailer", "cgi", "anime", "creative"],
+    "2": ["auto", "car", "vehicle", "bike", "motor", "motovlogging", "supercar"],
+    "10": ["music", "song", "audio", "singer", "production", "band", "t-series"],
+    "15": ["pet", "animal", "dog", "cat", "wildlife", "nature"],
+    "17": ["sports", "cricket", "football", "fitness", "workout", "gym", "match", "athlete"],
+    "20": ["game", "gaming", "esports", "playstation", "minecraft", "roblox", "gta", "streamer"],
+    "22": ["vlog", "people", "lifestyle", "daily", "family", "travel", "fashion", "culture"],
+    "23": ["comedy", "roast", "humor", "funny", "standup", "sketch", "parody", "carryminati"],
+    "24": ["entertainment", "fun", "show", "series", "mrbeast", "creative", "challenge"],
+    "25": ["news", "politics", "analysis", "current", "affairs", "media", "journalism", "dhruv"],
+    "26": ["how-to", "style", "beauty", "makeup", "cooking", "recipe", "food", "diy", "craft"],
+    "27": ["education", "learning", "upsc", "exam", "tutorial", "history", "knowledge", "study", "science"],
+    "28": ["science", "tech", "technology", "gadget", "coding", "engineering", "build", "device"]
+}
+
+def get_catalog_recommendations(category_id="24", region_code="ALL", max_results=24):
+    """Resilient offline-first channel recommendations strictly partitioned by category and country."""
+    norm_region = (region_code or "ALL").strip().upper()
+    cat_str = str(category_id)
     try:
-        logger.info(f"Starting search for category_id: {category_id}")
-        # Search for videos in the category first
-        search_request = youtube.search().list(
-            part="snippet",
-            type="video",
-            videoCategoryId=category_id,
-            maxResults=50,  # Fetch more results to get more unique channels
-            regionCode="IN",
-            relevanceLanguage="en",  # Prefer English content
-            q=get_category_keywords(category_id)  # Add relevant keywords for better results
-        )
-        logger.info(f"Executing search request with keywords: {get_category_keywords(category_id)}")
-        search_response = search_request.execute()
-        logger.info(f"Search response received. Found {len(search_response.get('items', []))} items")
-
-        # Extract unique channel IDs from the search results
-        channel_ids = list(set(item['snippet']['channelId'] for item in search_response.get('items', [])))
-        logger.info(f"Found {len(channel_ids)} unique channel IDs")
-
-        if not channel_ids:
-            logger.warning(f"No channel IDs found for category {category_id}")
-            return []
-
-        # Get detailed channel information
-        channels_request = youtube.channels().list(
-            part="snippet,statistics",
-            id=','.join(channel_ids[:max_results])
-        )
-        logger.info(f"Requesting details for {len(channel_ids[:max_results])} channels")
-        channels_response = channels_request.execute()
-        logger.info(f"Channel details response received. Found {len(channels_response.get('items', []))} channels")
-
-        channels = []
-        for item in channels_response.get('items', []):
-            try:
-                channel = {
-                    'channel_id': item['id'],
-                    'channel_name': item['snippet']['title'],
-                    'description': item['snippet'].get('description', ''),
-                    'thumbnails': item['snippet'].get('thumbnails', {}),
-                    'category_id': category_id,
-                    'subscriber_count': int(item['statistics'].get('subscriberCount', 0)),
-                    'video_count': int(item['statistics'].get('videoCount', 0)),
-                    'view_count': int(item['statistics'].get('viewCount', 0)),
-                    'country': item['snippet'].get('country', 'Unknown')
-                }
-                channels.append(channel)
-                logger.info(f"Successfully processed channel: {channel['channel_name']}")
-            except Exception as e:
-                logger.error(f"Error processing channel {item.get('id')}: {e}")
-                continue
-
-        # Sort by subscriber count and return top channels
-        channels.sort(key=lambda x: x['subscriber_count'], reverse=True)
-        logger.info(f"Returning {len(channels[:max_results])} channels for category {category_id}")
-        return channels[:max_results]
-
-    except HttpError as e:
-        logger.error(f"YouTube API error: {e}")
-        if e.resp.status == 404:
-            logger.error("No videos found for this category")
-            return []
-        raise
+        from services.category_creators import get_recommendations_by_category
+        return get_recommendations_by_category(cat_str, country_code=norm_region, max_results=max_results)
     except Exception as e:
-        logger.error(f"Error searching channels: {e}")
+        logger.error(f"Error calling get_recommendations_by_category: {e}")
         return []
+
+def search_channels_by_category(youtube, category_id, region_code="ALL", max_results=18):
+    norm_region = (region_code or "ALL").strip().upper()
+    cat_str = str(category_id)
+    logger.info(f"Starting search for category_id: {cat_str}, region: {norm_region}")
+
+    # Use the curated, strictly categorized category creators registry first
+    # This guarantees 100% vertical relevance and reliable high-res thumbnails across all 13 categories
+    try:
+        from services.category_creators import get_recommendations_by_category
+        curated_channels = get_recommendations_by_category(cat_str, country_code=norm_region, max_results=max_results)
+        if curated_channels and len(curated_channels) > 0:
+            return curated_channels
+    except Exception as ce:
+        logger.warning(f"Curated category registry lookup error: {ce}")
+
+    channels = []
+    # Try YouTube API if available and online
+    if youtube:
+        try:
+            search_params = {
+                "part": "snippet",
+                "type": "video",
+                "videoCategoryId": cat_str,
+                "maxResults": 50,
+                "relevanceLanguage": "en",
+                "q": get_category_keywords(cat_str)
+            }
+            if norm_region != "ALL":
+                search_params["regionCode"] = norm_region
+
+            search_request = youtube.search().list(**search_params)
+            search_response = search_request.execute()
+            raw_items = search_response.get('items', [])
+            logger.info(f"Search response received. Found {len(raw_items)} items")
+
+            channel_ids = []
+            seen_ids = set()
+            for item in raw_items:
+                cid = item.get('snippet', {}).get('channelId')
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    channel_ids.append(cid)
+
+            if channel_ids:
+                channels_request = youtube.channels().list(
+                    part="snippet,statistics",
+                    id=','.join(channel_ids[:max_results])
+                )
+                channels_response = channels_request.execute()
+
+                for item in channels_response.get('items', []):
+                    try:
+                        snippet = item.get('snippet', {})
+                        stats = item.get('statistics', {})
+                        country_val = snippet.get('country')
+                        if not country_val or country_val.upper() in ('UNKNOWN', 'NONE'):
+                            country_val = norm_region if norm_region != "ALL" else "Global"
+
+                        channel = {
+                            'channel_id': item.get('id'),
+                            'channel_name': snippet.get('title', 'Unknown Channel'),
+                            'description': snippet.get('description', ''),
+                            'thumbnails': snippet.get('thumbnails', {}),
+                            'category_id': cat_str,
+                            'subscriber_count': int(stats.get('subscriberCount', 0)),
+                            'video_count': int(stats.get('videoCount', 0)),
+                            'view_count': int(stats.get('viewCount', 0)),
+                            'country': country_val,
+                            'custom_url': f"https://www.youtube.com/channel/{item.get('id')}"
+                        }
+                        channels.append(channel)
+                    except Exception as e:
+                        logger.error(f"Error processing channel {item.get('id')}: {e}")
+                        continue
+        except Exception as e:
+            logger.warning(f"Live YouTube API search failed or offline ({e}). Falling back to verified catalog.")
+
+    # If YouTube API returned no channels or failed:
+    if not channels:
+        channels = get_catalog_recommendations(cat_str, region_code=norm_region, max_results=max_results)
+
+    return channels
 
 def get_category_keywords(category_id):
     """Return relevant keywords for each category to improve search results"""
     keywords = {
-        "27": "education tutorial learning course teach university college school academic",  # Education
-        "28": "science technology engineering mathematics tech coding programming",  # Science & Technology
-        "24": "entertainment fun show series",  # Entertainment
-        "25": "news politics current affairs analysis",  # News & Politics
-        "26": "how to style tips tricks tutorial guide",  # How-to & Style
-        "10": "music song audio playlist album artist",  # Music
-        "20": "gaming gameplay walkthrough review",  # Gaming
-        "22": "vlog lifestyle daily life",  # People & Blogs
-        "23": "comedy funny humor sketch",  # Comedy
+        "27": "education tutorial learning course teach university college school academic",
+        "28": "science technology engineering mathematics tech coding programming",
+        "24": "entertainment fun show series",
+        "25": "news politics current affairs analysis",
+        "26": "how to style tips tricks tutorial guide",
+        "10": "music song audio playlist album artist",
+        "20": "gaming gameplay walkthrough review",
+        "22": "vlog lifestyle daily life",
+        "23": "comedy funny humor sketch",
+        "1": "film animation cinema movie trailer",
+        "2": "cars autos vehicles automotive review",
+        "15": "pets animals dogs cats wildlife nature",
+        "17": "sports football cricket basketball match highlights",
     }
     return keywords.get(category_id, "")
+
+@recom_bp.route('/countries', methods=['GET'])
+def get_countries():
+    """Get supported country filters"""
+    return jsonify({
+        'success': True,
+        'countries': SUPPORTED_COUNTRIES
+    })
 
 @recom_bp.route('/categories', methods=['GET'])
 def get_categories():
@@ -150,74 +240,75 @@ def get_categories():
 
 @recom_bp.route('/recommendations', methods=['POST', 'OPTIONS'])
 def get_recommendations():
-    """Get channel recommendations based on selected categories"""
+    """Get channel recommendations based on selected categories and optional country filter"""
     if request.method == 'OPTIONS':
         return '', 204
 
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({
-                'success': False,
-                'error': 'No JSON data received'
-            }), 400
-
+        data = request.get_json(force=True, silent=True) or {}
         categories = data.get('categories', [])
+        country = data.get('country') or data.get('regionCode') or 'ALL'
+        
         if not categories:
-            return jsonify({
-                'success': False,
-                'error': 'No categories selected'
-            }), 400
+            categories = ['24']  # Default to Entertainment
 
         youtube = get_youtube_service()
-        if not youtube:
-            return jsonify({
-                'success': False,
-                'error': 'Could not initialize YouTube service'
-            }), 500
 
         all_channels = []
         for category_id in categories:
             try:
-                channels = search_channels_by_category(youtube, category_id)
+                channels = search_channels_by_category(youtube, str(category_id), region_code=country)
                 if channels:
                     all_channels.extend(channels)
-                else:
-                    logger.warning(f"No channels found for category {category_id}")
             except Exception as e:
                 logger.error(f"Error processing category {category_id}: {e}")
-                continue
+                channels = get_catalog_recommendations(str(category_id), region_code=country)
+                all_channels.extend(channels)
 
-        # Sort channels by subscriber count
-        all_channels.sort(key=lambda x: x['subscriber_count'], reverse=True)
-
-        # Log the response for debugging
-        logger.info(f"Found {len(all_channels)} channels for categories {categories}")
         if not all_channels:
-            logger.warning(f"No channels found for categories {categories}")
+            all_channels = get_catalog_recommendations('24', region_code=country)
 
+        # Remove duplicates
+        seen = set()
+        deduped = []
+        for ch in all_channels:
+            if ch['channel_id'] not in seen:
+                seen.add(ch['channel_id'])
+                deduped.append(ch)
+
+        # Prioritize exact country matches if user chose a sovereign nation
+        if country != "ALL":
+            exact = [c for c in deduped if str(c.get('country', '')).upper() == country.upper()]
+            others = [c for c in deduped if str(c.get('country', '')).upper() != country.upper()]
+            deduped = exact + others
+
+        logger.info(f"Returning {len(deduped)} channels for categories {categories}, country: {country}")
         return jsonify({
             'success': True,
-            'results': all_channels,
-            'count': len(all_channels)
+            'results': deduped,
+            'count': len(deduped),
+            'country': country
         })
 
     except Exception as e:
         logger.error(f"Error getting recommendations: {e}")
+        fallback_channels = get_catalog_recommendations('24', 'ALL')
         return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+            'success': True,
+            'results': fallback_channels,
+            'count': len(fallback_channels),
+            'country': 'ALL'
+        }), 200
 
 @recom_bp.route('/test-db', methods=['GET'])
 def test_database():
     """Test database connection"""
     try:
         logger.info("Received test-db request")
-        try:
+        if youtube_collection is not None:
             count = youtube_collection.count_documents({})
             sample = youtube_collection.find_one({}, {'_id': 0})
-        except Exception:
+        else:
             count = len(SAMPLE_CHANNELS)
             sample = SAMPLE_CHANNELS[0]
             
@@ -240,10 +331,12 @@ def get_channel_details(channel_id):
     """Get detailed information about a specific channel"""
     try:
         logger.info(f"Fetching details for channel: {channel_id}")
-        channel = youtube_collection.find_one(
-            {'channel_id': channel_id},
-            {'_id': 0}  # Exclude MongoDB _id
-        )
+        channel = None
+        if youtube_collection is not None:
+            channel = youtube_collection.find_one(
+                {'channel_id': channel_id},
+                {'_id': 0}
+            )
         
         if not channel:
             return jsonify({
@@ -255,65 +348,52 @@ def get_channel_details(channel_id):
             'success': True,
             'channel': channel
         })
-    except PyMongoError as e:
-        logger.error(f"Database error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @recom_bp.route('/channel/<channel_id>/videos', methods=['GET'])
 def get_channel_videos(channel_id):
     """Get videos for a specific channel"""
     try:
-        logger.info(f"Fetching videos for channel: {channel_id}")
-        channel = youtube_collection.find_one(
-            {'channel_id': channel_id},
-            {'videos': 1, '_id': 0}
-        )
+        if youtube_collection is not None:
+            channel = youtube_collection.find_one(
+                {'channel_id': channel_id},
+                {'videos': 1, '_id': 0}
+            )
+            if channel and 'videos' in channel:
+                return jsonify({
+                    'success': True,
+                    'videos': channel['videos']
+                })
         
-        if not channel or 'videos' not in channel:
-            return jsonify({
-                'success': False,
-                'error': 'Channel or videos not found'
-            }), 404
-
         return jsonify({
-            'success': True,
-            'videos': channel['videos']
-        })
-    except PyMongoError as e:
-        logger.error(f"Database error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+            'success': False,
+            'error': 'Channel or videos not found'
+        }), 404
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @recom_bp.route('/channel/<channel_id>/shorts', methods=['GET'])
 def get_channel_shorts(channel_id):
     """Get shorts for a specific channel"""
     try:
-        logger.info(f"Fetching shorts for channel: {channel_id}")
-        channel = youtube_collection.find_one(
-            {'channel_id': channel_id},
-            {'shorts': 1, '_id': 0}
-        )
+        if youtube_collection is not None:
+            channel = youtube_collection.find_one(
+                {'channel_id': channel_id},
+                {'shorts': 1, '_id': 0}
+            )
+            if channel and 'shorts' in channel:
+                return jsonify({
+                    'success': True,
+                    'shorts': channel['shorts']
+                })
         
-        if not channel or 'shorts' not in channel:
-            return jsonify({
-                'success': False,
-                'error': 'Channel or shorts not found'
-            }), 404
-
         return jsonify({
-            'success': True,
-            'shorts': channel['shorts']
-        })
-    except PyMongoError as e:
-        logger.error(f"Database error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+            'success': False,
+            'error': 'Channel or shorts not found'
+        }), 404
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @recom_bp.route('/add-channel', methods=['POST'])
@@ -329,25 +409,22 @@ def add_channel():
                 'error': 'Missing required fields'
             }), 400
 
-        result = youtube_collection.insert_one({
-            'channel_name': data['channel_name'],
-            'category': data['category'],
-            'description': data['description'],
-            'subscriber_count': data.get('subscriber_count', 0),
-            'video_count': data.get('video_count', 0),
-            'view_count': data.get('view_count', 0),
-            'country': data.get('country', '')
-        })
-
-        return jsonify({
-            'success': True,
-            'inserted_id': str(result.inserted_id)
-        })
-    except PyMongoError as e:
-        logger.error(f"Database error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        if youtube_collection is not None:
+            result = youtube_collection.insert_one({
+                'channel_name': data['channel_name'],
+                'category': data['category'],
+                'description': data['description'],
+                'subscriber_count': data.get('subscriber_count', 0),
+                'video_count': data.get('video_count', 0),
+                'view_count': data.get('view_count', 0),
+                'country': data.get('country', '')
+            })
+            return jsonify({
+                'success': True,
+                'inserted_id': str(result.inserted_id)
+            })
+        return jsonify({'success': False, 'error': 'Database unavailable'}), 503
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @recom_bp.route('/test', methods=['GET'])

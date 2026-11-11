@@ -1,0 +1,38 @@
+# =============================================================================
+# .dockerignore - Files excluded from the Docker Build Context
+# =============================================================================
+
+# Dependencies (will be freshly installed inside the Linux container)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Version control
+.git/
+.gitignore
+
+# Environment secrets (passed via Docker Compose / environment variables instead)
+.env
+.env.*
+!.env.example
+
+# Temporary files & editor settings
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+flask_*.log
+
+# Test & coverage caches
+.pytest_cache/
+coverage/

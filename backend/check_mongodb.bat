@@ -1,3 +1,0 @@
-@echo off
-echo Checking MongoDB connection...
-python -c "from pymongo import MongoClient; client = MongoClient('mongodb://localhost:27017/'); print('MongoDB is running!' if client.server_info() else 'MongoDB is not running!')" 

@@ -36,15 +36,22 @@ else:
 def create_app():
     print("--- Creating Flask App ---")
     app = Flask(__name__)
-    # Configure CORS
+    # Configure CORS to permit any origin (localhost, 127.0.0.1, etc.)
     CORS(app, resources={
         r"/*": {
-            "origins": ["http://localhost:3000"],
+            "origins": "*",
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"]
         }
     })
     print("--- CORS Initialized (Allowing *) ---")
+
+    @app.after_request
+    def add_cors_headers(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        return response
 
     # --- Flask-Mail Configuration ---
     # (Keep your existing mail config)
@@ -65,7 +72,7 @@ def create_app():
     print("--- Flask-Mail Initialized ---")
 
     # Configure JWT
-    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-secret-key-here')  # Change this in production
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY') or 'dev-only-change-me'
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
     jwt = JWTManager(app)
 
@@ -123,6 +130,6 @@ if __name__ == '__main__':
     logger.info("Starting Flask server...")
     try:
         # Use host='0.0.0.0' to be accessible on your network
-        app.run(debug=True, port=5000, host='0.0.0.0')
+        app.run(debug=False, port=5000, host='0.0.0.0', threaded=True)
     except Exception as e:
         logger.error(f"Error starting server: {str(e)}")
