@@ -19,10 +19,12 @@ import logging
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from urllib.parse import unquote
+from blueprints.config import MONGODB_URI, MONGODB_DB, YOUTUBE_API_KEY
+from services.channel_ingest import IngestError, get_or_ingest_channel
+from services.serialize import json_safe
 
-# YouTube API Configuration
-API_KEY = "AIzaSyC8b29_0Q8GCdeoGYtev3HGRFRf-_UGRIU"
-youtube = build("youtube", "v3", developerKey=API_KEY)
+API_KEY = YOUTUBE_API_KEY
+youtube = build("youtube", "v3", developerKey=API_KEY) if API_KEY else None
 
 # Category Mapping for YouTube videos
 CATEGORY_MAPPING = {
@@ -63,15 +65,9 @@ except Exception as e:
 # Initialize Sentiment Analyzer
 sia = SentimentIntensityAnalyzer()
 
-# Connect to MongoDB
-try:
-    client = pymongo.MongoClient("mongodb://localhost:27017/")
-    db = client["network"]
-    collection = db["youtube"]
-    logger.info("Successfully connected to MongoDB")
-except Exception as e:
-    logger.error(f"Error connecting to MongoDB: {e}")
-    collection = None
+from db.mongo import get_youtube_collection
+
+collection = get_youtube_collection()
 
 class NetworkAnalyzer:
     def analyze_network(self, videos):
@@ -82,35 +78,45 @@ class NetworkAnalyzer:
         G = nx.Graph()
         
         try:
-            # Add nodes and edges for videos and categories
             for video in videos:
                 video_node = f"video_{video.get('video_id', '')}"
                 category_node = f"category_{video.get('category', '')}"
-                
-                G.add_node(video_node, type="video", **video)
-                G.add_node(category_node, type="category")
-                
-                # Calculate engagement with better normalization
-                engagement = video.get('likes', 0) + video.get('comments', 0) + (video.get('views', 0) / 1000)
-                G.add_edge(video_node, category_node, weight=engagement * 0.5)  # Normalize Category Influence
-            
-            # Process descriptions and titles for similarity
-            descriptions = [video.get("description", "") for video in videos]
-            titles = [video.get("title", "") for video in videos]
-            
-            # Calculate similarities using TF-IDF
-            vectorizer = TfidfVectorizer()
-            tfidf_matrix_desc = vectorizer.fit_transform(descriptions)
-            tfidf_matrix_title = vectorizer.fit_transform(titles)
-            
-            similarity_matrix_desc = cosine_similarity(tfidf_matrix_desc)
-            similarity_matrix_title = cosine_similarity(tfidf_matrix_title)
+                G.add_node(video_node, node_type="video")
+                G.add_node(category_node, node_type="category")
+                likes = float(video.get("likes", 0) or 0)
+                comment_count = video.get("comments", 0)
+                if isinstance(comment_count, list):
+                    comment_count = len(comment_count)
+                comment_count = float(comment_count or 0)
+                views = float(video.get("views", 0) or 0)
+                engagement = likes + comment_count + (views / 1000)
+                G.add_edge(video_node, category_node, weight=engagement * 0.5)
+
+            descriptions = [video.get("description", "") or "" for video in videos]
+            titles = [video.get("title", "") or "" for video in videos]
+            similarity_matrix_desc = None
+            similarity_matrix_title = None
+            try:
+                if any(descriptions):
+                    vectorizer = TfidfVectorizer(min_df=1)
+                    tfidf_matrix_desc = vectorizer.fit_transform(descriptions)
+                    similarity_matrix_desc = cosine_similarity(tfidf_matrix_desc)
+                if any(titles):
+                    vectorizer = TfidfVectorizer(min_df=1)
+                    tfidf_matrix_title = vectorizer.fit_transform(titles)
+                    similarity_matrix_title = cosine_similarity(tfidf_matrix_title)
+            except ValueError as exc:
+                logger.warning("TF-IDF skipped: %s", exc)
             
             # Add edges based on content similarity
             for i in range(len(videos)):
                 for j in range(i + 1, len(videos)):
-                    description_similarity = similarity_matrix_desc[i, j]
-                    title_similarity = similarity_matrix_title[i, j]
+                    description_similarity = (
+                        similarity_matrix_desc[i, j] if similarity_matrix_desc is not None else 0
+                    )
+                    title_similarity = (
+                        similarity_matrix_title[i, j] if similarity_matrix_title is not None else 0
+                    )
                     combined_similarity = (description_similarity + title_similarity) / 2.0
                     
                     if combined_similarity > 0.3:  # Strengthen video-to-video connections
@@ -163,6 +169,9 @@ class YouTubeAnalyzer:
 
     def fetch_channel_videos(self, channel_name, max_videos=10):
         """Fetch channel videos with pagination"""
+        if youtube is None:
+            logger.error("YOUTUBE_API_KEY is not set")
+            return None
         try:
             logger.info(f"Fetching channel ID for: {channel_name}")
             search_response = youtube.search().list(
@@ -424,72 +433,37 @@ def analyze_sentiment():
         channel_name = request.args.get("channel")
         if not channel_name:
             return jsonify({"error": "Channel name is required"}), 400
-            
-        # Decode the channel name if it's URL encoded
         channel_name = unquote(channel_name)
         logger.info(f"Processing channel: {channel_name}")
-            
-        # First get fresh data from YouTube API for centrality analysis (20 latest videos)
-        yt_analyzer = YouTubeAnalyzer()
-        api_videos = yt_analyzer.fetch_channel_videos(channel_name, max_videos=20)
-        
+        force_refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+        try:
+            channel_data = get_or_ingest_channel(channel_name, force_refresh=force_refresh)
+        except IngestError as exc:
+            logger.error("Ingest failed for %s: %s", channel_name, exc.message)
+            return jsonify({"error": exc.message}), exc.status_code
+
+        api_videos = channel_data.get("videos") or []
         if not api_videos:
-            logger.error(f"Channel '{channel_name}' not found on YouTube")
             return jsonify({
-                "error": f"Channel '{channel_name}' not found on YouTube. Please check the channel name and try again.",
-                "details": "Make sure the channel name is correct and the channel exists on YouTube."
+                "error": f"No videos found for '{channel_name}'.",
             }), 404
-            
-        logger.info(f"Successfully fetched {len(api_videos)} videos from YouTube API")
-            
-        # Then get data from MongoDB for sentiment analysis
-        channel_data = collection.find_one({"title": channel_name})
-        if not channel_data:
-            logger.info(f"Channel '{channel_name}' not found in MongoDB, creating new structure")
-            # If not in MongoDB, create a new channel data structure
-            channel_data = {
-                "title": channel_name,
-                "videos": []
-            }
-        else:
-            logger.info(f"Found channel '{channel_name}' in MongoDB")
-            
-        # Create a combined data structure
+
+        logger.info(
+            "Using stored snapshot for %s (%s videos)",
+            channel_data.get("channel_name", channel_name),
+            len(api_videos),
+        )
         channel_data["api_videos"] = api_videos
-        
-        # Get video IDs from MongoDB data
-        mongo_video_ids = [video.get("video_id") for video in channel_data.get("videos", [])]
-        
-        # Fetch fresh statistics for all videos
-        all_video_ids = list(set([v.get("video_id") for v in api_videos] + mongo_video_ids))
-        
-        # Fetch video statistics in batches of 50
-        all_video_stats = {}
-        for i in range(0, len(all_video_ids), 50):
-            batch = all_video_ids[i:i + 50]
-            try:
-                video_response = youtube.videos().list(
-                    part="statistics,snippet",
-                    id=",".join(batch)
-                ).execute()
-                
-                for item in video_response.get("items", []):
-                    video_id = item["id"]
-                    stats = item["statistics"]
-                    all_video_stats[video_id] = {
-                        "views": int(stats.get("viewCount", 0)),
-                        "likes": int(stats.get("likeCount", 0)),
-                        "title": item["snippet"]["title"]
-                    }
-            except Exception as e:
-                logger.error(f"Error fetching video statistics: {e}")
-                continue
-        
-        # Update video data with fresh statistics
-        for video in api_videos:
-            video_id = video.get("video_id")
-            if video_id in all_video_stats:
-                video.update(all_video_stats[video_id])
+
+        all_video_stats = {
+            video.get("video_id"): {
+                "views": video.get("views", 0),
+                "likes": video.get("likes", 0),
+                "title": video.get("title", ""),
+            }
+            for video in api_videos
+            if video.get("video_id")
+        }
         
         # Create a mapping of video_id to MongoDB video data
         mongo_video_map = {v.get("video_id"): v for v in channel_data.get("videos", [])}
@@ -499,13 +473,17 @@ def analyze_sentiment():
         centrality = net_analyzer.analyze_network(api_videos)
         
         if centrality is None:
-            return jsonify({"error": "Centrality Calculation Failed"}), 500
+            logger.warning("Centrality calculation skipped; continuing with zeros")
+            centrality = {"degree": {}, "betweenness": {}, "closeness": {}, "eigenvector": {}}
             
         # Process sentiment data from MongoDB
         video_sentiments = []
         hourly_sentiment = defaultdict(int)
         total_counts = {"Positive": 0, "Negative": 0, "Neutral": 0}
         engagement_metrics = {}
+
+        # Top 50 comments collected for channel
+        channel_top_comments = channel_data.get("top_comments") or []
         
         # Process all API videos
         video_data_map = {}
@@ -526,17 +504,22 @@ def analyze_sentiment():
             # Get MongoDB data if available
             mongo_video = mongo_video_map.get(video_id, {})
             comments = mongo_video.get("top_comments", [])
+            if not comments and channel_top_comments:
+                comments = [c for c in channel_top_comments if c.get("video_id") == video_id]
             
             for comment_data in comments:
                 comment_text = comment_data.get("comment", "")
-                score = sia.polarity_scores(comment_text)["compound"]
-                
-                if score > 0.05:
-                    video_data_map[video_title]["sentiments"]["Positive"] += 1
-                elif score < -0.05:
-                    video_data_map[video_title]["sentiments"]["Negative"] += 1
+                sent_label = comment_data.get("sentiment")
+                if sent_label in video_data_map[video_title]["sentiments"]:
+                    video_data_map[video_title]["sentiments"][sent_label] += 1
                 else:
-                    video_data_map[video_title]["sentiments"]["Neutral"] += 1
+                    score = sia.polarity_scores(comment_text)["compound"]
+                    if score > 0.05:
+                        video_data_map[video_title]["sentiments"]["Positive"] += 1
+                    elif score < -0.05:
+                        video_data_map[video_title]["sentiments"]["Negative"] += 1
+                    else:
+                        video_data_map[video_title]["sentiments"]["Neutral"] += 1
                     
                 published_at = comment_data.get("published_at", "")
                 if published_at:
@@ -576,6 +559,28 @@ def analyze_sentiment():
             for sentiment_type, count in video_data_map[video_title]["sentiments"].items():
                 total_counts[sentiment_type] += count
         
+        # If per-video comments were few, ensure total_counts reflects all channel_top_comments
+        if channel_top_comments:
+            direct_counts = {"Positive": 0, "Negative": 0, "Neutral": 0}
+            for c in channel_top_comments:
+                s = c.get("sentiment")
+                if s in direct_counts:
+                    direct_counts[s] += 1
+                else:
+                    sc = sia.polarity_scores(c.get("comment", ""))["compound"]
+                    lbl = "Positive" if sc > 0.05 else ("Negative" if sc < -0.05 else "Neutral")
+                    direct_counts[lbl] += 1
+                pub = c.get("published_at", "")
+                if pub:
+                    try:
+                        h = int(pub[11:13])
+                        w = int(pub[8:10]) % 7
+                        hourly_sentiment[f"{w}-{h}"] += 1
+                    except (ValueError, IndexError):
+                        pass
+            if sum(direct_counts.values()) >= sum(total_counts.values()):
+                total_counts = direct_counts
+
         # Calculate total comments and sentiment percentages
         total_comments = sum(total_counts.values()) or 1
         sentiment_percentages = {
@@ -595,45 +600,62 @@ def analyze_sentiment():
             "closeness": {v['video_id']: centrality["closeness"].get(f"video_{v['video_id']}", 0) for v in api_videos}
         }
         
-        # Calculate predictions if we have MongoDB data
         predicted_performance = {}
-        if channel_data.get("videos"):
-            df_features, y, _, _, _, _ = extract_features(channel_data)
-            if not df_features.empty:
-                X_train, X_test, y_train, y_test = train_test_split(df_features, y, test_size=0.2, random_state=42)
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                X_test_scaled = scaler.transform(X_test)
-                
-                model = RandomForestRegressor(n_estimators=100, random_state=42)
-                model.fit(X_train_scaled, y_train)
-                
-                predicted_views = model.predict(scaler.transform(df_features))
-                predicted_performance = {
-                    video.get("title", "Unknown Video"): int(pred) 
-                    for video, pred in zip(channel_data.get("videos", []), predicted_views)
-                }
+        try:
+            if channel_data.get("videos"):
+                df_features, y, _, _, _, _ = extract_features(channel_data)
+                if df_features is not None and not df_features.empty and len(df_features) >= 3:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        df_features, y, test_size=0.2, random_state=42
+                    )
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train)
+                    model = RandomForestRegressor(n_estimators=50, random_state=42)
+                    model.fit(X_train_scaled, y_train)
+                    predicted_views = model.predict(scaler.transform(df_features))
+                    predicted_performance = {
+                        video.get("title", "Unknown Video"): int(pred)
+                        for video, pred in zip(channel_data.get("videos", []), predicted_views)
+                    }
+        except Exception as pred_error:
+            logger.warning("Skipping view prediction: %s", pred_error)
         
         best_time = max(hourly_sentiment.items(), key=lambda x: x[1], default=("Unknown", 0))[0]
         
         logger.info("Successfully completed analysis")
-        return jsonify({
+        os.makedirs("graphs", exist_ok=True)
+        all_returned_comments = channel_top_comments or []
+        if not all_returned_comments:
+            for v in channel_data.get("videos", []):
+                all_returned_comments.extend(v.get("top_comments", []))
+
+        return jsonify(json_safe({
             "percentages": sentiment_percentages,
+            "total_comments_count": len(all_returned_comments),
+            "top_comments": all_returned_comments[:50],
+            "sentiment_summary": channel_data.get("sentiment_summary") or {
+                "total_comments": len(all_returned_comments),
+                "positive_percentage": sentiment_percentages.get("Positive", 0),
+                "negative_percentage": sentiment_percentages.get("Negative", 0),
+                "neutral_percentage": sentiment_percentages.get("Neutral", 0),
+            },
             "video_sentiments": video_sentiments,
-            "hourly_sentiment": hourly_sentiment,
+            "hourly_sentiment": dict(hourly_sentiment),
             "best_time": f"{best_time}:00",
             "sentiment_graph": "/sentiment/graph/sentiment",
             "centrality": centrality_metrics,
             "engagement_metrics": engagement_metrics,
             "predicted_performance": predicted_performance,
             "heatmap": "/sentiment/graph/heatmap",
-            "centrality_heatmap": "/sentiment/graph/centrality_heatmap"
-        })
+            "centrality_heatmap": "/sentiment/graph/centrality_heatmap",
+            "channel": channel_data.get("channel_name") or channel_name,
+            "stored_videos": len(api_videos),
+        }))
         
     except Exception as e:
-        logger.error(f"Error in analyze_sentiment: {str(e)}")
+        logger.exception("Error in analyze_sentiment")
         return jsonify({
-            "error": "Internal server error",
+            "error": str(e),
             "details": str(e)
         }), 500
 

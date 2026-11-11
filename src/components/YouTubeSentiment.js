@@ -1,3 +1,4 @@
+import { resilientFetch } from "../apiConfig";
 import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Chart from "chart.js/auto";
@@ -170,7 +171,7 @@ const YouTubeSentiment = () => {
         setError(null);
         setLoading(true);
         try {
-            const response = await fetch(`http://127.0.0.1:5000/sentiment/analyze_sentiment?channel=${encodeURIComponent(channel)}`);
+            const response = await resilientFetch(`/sentiment/analyze_sentiment?channel=${encodeURIComponent(channel)}`);
             const data = await response.json();
             
             if (!response.ok) {

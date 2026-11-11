@@ -1,0 +1,127 @@
+================================================================================
+INSIGHTSPHERE STUDIO | TECHNICAL METHODOLOGY & MATHEMATICAL ARCHITECTURE
+================================================================================
+Archived Technical Reference, NLP Formulations, Network Topology Models,
+and YouTube Data API v3 Ingestion Specifications.
+Date Archived: 2026-11-02
+================================================================================
+
+1. SENTIMENT & ATTENTION ENGINE ARCHITECTURE
+--------------------------------------------------------------------------------
+A. VADER Compound Polarity (Lexicon and Rule-Based NLP):
+   - Algorithm: Valence Aware Dictionary and sEntiment Reasoner (VADER).
+   - Polarity Normalization Formula:
+       compound = x / sqrt(x^2 + alpha)
+       where x = sum of valence ratings of constituent words, alpha = 15.
+   - Polarity Scale: Normalized score in range [-1.0, +1.0]:
+       * Positive: compound >= +0.05
+       * Neutral:  -0.05 < compound < +0.05
+       * Negative: compound <= -0.05
+   - Rule-based modifiers:
+       * Emojis with empirical sentiment valence weights (e.g. 🔥, ❤️, 💀, 🤮)
+       * Capitalization intensifiers (e.g., "GREAT" vs "great")
+       * Punctuation repetition intensifiers (e.g., "!!!" vs "!")
+       * Contrastive conjunction shifts (e.g., "The editing was good BUT the pacing was terrible")
+
+B. 7 x 24 Temporal Attention Density Matrix:
+   - Purpose: Maps recurring cyclical weekly audience habit density across days and hours.
+   - Calculation:
+       density(d, h) = Sum of comments published on weekday d (0=Monday, 6=Sunday)
+                       at hour h (00:00 - 23:00 UTC).
+   - Optimal Publishing Window:
+       t_optimal = argmax_{d, h} (Velocity_positive(d, h)) - 1.5 hours
+       Publishing 60-120 minutes prior to peak engagement window primes YouTube's
+       collaborative filtering recommendation momentum.
+
+C. Random Forest Reach & View Forecasting:
+   - Model: Random Forest Regressor Ensemble (B = 100 decision trees).
+   - Formulation:
+       Y_pred = (1 / B) * Sum_{b=1}^{B} T_b(X)
+   - 14-Dimensional Input Feature Vector X:
+       [1]  Historical view velocity
+       [2]  Like-to-view interaction ratio
+       [3]  Comment-to-view ratio
+       [4]  Mean VADER sentiment valence
+       [5]  Positive comment ratio
+       [6]  Negative comment ratio
+       [7]  Content duration bucket (Short <60s, Mid 1-10m, Long >10m)
+       [8]  Upload recency decay factor
+       [9]  Category baseline velocity multiplier
+       [10] Network Degree Centrality
+       [11] Network Betweenness Centrality
+       [12] Tag semantic saturation score
+       [13] Hour of publication cycle
+       [14] Day of week attention index
+
+D. Distributed Multi-Video Comment Ingestion:
+   - Sampling Strategy: 15 most recent uploads and shorts.
+   - Ingestion: Top 10 comments extracted per video = 150 total comments.
+   - Eliminates single-video viral bias and ensures a representative creator audit.
+
+--------------------------------------------------------------------------------
+2. CONTENT TOPOLOGY & NETWORK GRAPH MATHEMATICS
+--------------------------------------------------------------------------------
+A. TF-IDF Semantic Lexicon Extraction:
+   - Vectorization:
+       tfidf(t, d, D) = tf(t, d) * log(|D| / |{d in D : t in d}|)
+       where t = term, d = title/description text, D = channel video corpus.
+   - Stopword filtering and n-gram extraction (unigrams + bigrams).
+
+B. Cosine Similarity Edge Thresholding:
+   - Weighted Graph Edges:
+       similarity(u, v) = (u . v) / (||u|| * ||v||)
+   - Edge exists if similarity(u, v) >= 0.25.
+
+C. Graph Centralities:
+   - Degree Centrality (Flagship Hubness):
+       C_D(v) = deg(v) / (N - 1)
+   - Betweenness Centrality (Bridge Content connecting disparate niches):
+       C_B(v) = Sum_{s != v != t} (sigma_{st}(v) / sigma_{st})
+   - Closeness Centrality (Discovery Speed):
+       C_C(v) = (N - 1) / Sum_{u != v} dist(v, u)
+
+D. Engagement Clustering:
+   - Scatter segmentation: Views vs Likes vs Duration.
+   - K-Means centroid allocation minimizing within-cluster sum of squares:
+       argmin_{S} Sum_{i=1}^{k} Sum_{x in S_i} ||x - mu_i||^2
+
+--------------------------------------------------------------------------------
+3. YOUTUBE DATA API v3 SPECIFICATIONS & PARAMETERS
+--------------------------------------------------------------------------------
+A. Trending Videos (MostPopular Chart):
+   - Endpoint: youtube.videos().list(part="snippet,statistics", chart="mostPopular", regionCode=..., maxResults=50)
+   - Parameters:
+       * regionCode: ISO 3166-1 alpha-2 (IN, US, GB, CA, JP, KR, DE, FR, BR, AU)
+       * maxResults: 50
+       * statistics: viewCount, likeCount, commentCount
+       * snippet: title, channelTitle, publishedAt, thumbnails, categoryId
+   - Caching Architecture:
+       * In-memory cache dictionary with 600-second (10-minute) TTL.
+       * Client failure auto-reconnect with cache fallback preventing 404 drops.
+
+B. WordCloud Lexical Generation:
+   - Dark aesthetic canvas (#121212), Autumn colormap, high-contrast title keyword density.
+
+--------------------------------------------------------------------------------
+4. CREATOR VERIFICATION & BENCHMARKING AUDIT CRITERIA
+--------------------------------------------------------------------------------
+A. Verified Engagement Rate (ER %):
+   - Formula:
+       ER (%) = ((Total Likes + Total Comments) / Total Views) * 100
+   - Benchmarks:
+       * Exceptional: >= 6.5%
+       * High: >= 4.5%
+       * Standard: 1.5% - 4.5%
+       * Underperforming: < 1.5%
+
+B. Audience Tier Classification:
+   - Mega Creator:       > 10,000,000 subscribers
+   - Super Creator:      5,000,000 - 10,000,000 subscribers
+   - Macro Creator:      1,000,000 - 5,000,000 subscribers
+   - Mid-Tier Creator:   500,000 - 1,000,000 subscribers
+   - Micro Creator:      10,000 - 500,000 subscribers
+   - Emerging Creator:   < 10,000 subscribers
+
+================================================================================
+END OF ARCHIVED SPECIFICATIONS
+================================================================================
