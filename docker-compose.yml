@@ -1,0 +1,91 @@
+# =============================================================================
+# InsightSphere STUDIO - Full-Stack Orchestration
+# Services:
+#   1. mongodb  -> Database (Port 27017)
+#   2. backend  -> Python Flask API (Port 5000)
+#   3. frontend -> React + Nginx Web Server (Port 3000 -> 80)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. MongoDB Database
+  # ---------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: insightsphere-mongodb
+    restart: unless-stopped
+    ports:
+      # Map host 27018 to container 27017 to avoid conflict with any host Windows MongoDB on 27017.
+      # Inside the Docker bridge network, services talk directly to mongodb:27017!
+      - "27018:27017"
+    volumes:
+      # Named volume guarantees database data survives container restarts/rebuilds
+      - mongodb_data:/data/db
+    networks:
+      - insightsphere-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 2. Flask Python Backend API
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: insightsphere-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      # Values are interpolated automatically from your local .env file (never commit real secrets to Git!)
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
+      # Internal DNS resolution: 'mongodb' resolves to the database container IP
+      - MONGODB_URI=mongodb://mongodb:27017/network
+      - MONGODB_DB=network
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-insightsphere-super-secure-key-2026}
+      - FROM_EMAIL=${FROM_EMAIL:-}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD:-}
+      - MAIL_SERVER=smtp.gmail.com
+      - MAIL_PORT=587
+      - MAIL_USE_TLS=True
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - insightsphere-network
+
+  # ---------------------------------------------------------------------------
+  # 3. React Frontend (Nginx Production Server)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: insightsphere-frontend
+    restart: unless-stopped
+    ports:
+      # Map host machine port 3000 to Nginx port 80 inside container
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - insightsphere-network
+
+# =============================================================================
+# Persistent Storage Volumes
+# =============================================================================
+volumes:
+  mongodb_data:
+    driver: local
+
+# =============================================================================
+# Isolated Bridge Network (Enables inter-container DNS resolution)
+# =============================================================================
+networks:
+  insightsphere-network:
+    driver: bridge

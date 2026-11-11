@@ -1,0 +1,48 @@
+# =============================================================================
+# MongoDB Deployment & ClusterIP Service
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-deployment
+  labels:
+    app: insightsphere-mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insightsphere-mongodb
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: insightsphere-mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: mongodb-storage
+              mountPath: /data/db
+      volumes:
+        - name: mongodb-storage
+          persistentVolumeClaim:
+            claimName: mongodb-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  labels:
+    app: insightsphere-mongodb
+spec:
+  type: ClusterIP
+  ports:
+    - port: 27017
+      targetPort: 27017
+  selector:
+    app: insightsphere-mongodb
