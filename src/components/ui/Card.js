@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import styled from "styled-components";
 import Chart from "chart.js/auto";
+import { resilientFetch } from "../../apiConfig";
 
 const Card = styled.div`
   background: var(--surface);
@@ -31,7 +32,7 @@ const InfluencerCard = ({ influencer, index }) => {
 
   useEffect(() => {
     async function fetchEngagementData() {
-      const response = await fetch(`http://127.0.0.1:5000/fetch_channel_engagement?channel_id=${channel_id}`);
+      const response = await resilientFetch(`/influencer/fetch_channel_engagement?channel_id=${channel_id}`);
       const data = await response.json();
       
       const ctx = document.getElementById(`chart-${index}`);

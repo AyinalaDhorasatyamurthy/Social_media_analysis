@@ -36,7 +36,7 @@ RUN rm -rf /usr/share/nginx/html/*
 # Copy compiled React static assets from Stage 1 builder
 COPY --from=builder /app/build /usr/share/nginx/html
 
-# Copy custom Nginx configuration with React SPA routing (prevents 404 on refresh)
+# Copy custom Nginx configuration with SPA routing and /api reverse proxy
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Expose HTTP port 80

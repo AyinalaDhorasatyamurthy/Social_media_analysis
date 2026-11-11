@@ -57,7 +57,9 @@ services:
       mongodb:
         condition: service_healthy
     networks:
-      - insightsphere-network
+      insightsphere-network:
+        aliases:
+          - backend-service
 
   # ---------------------------------------------------------------------------
   # 3. React Frontend (Nginx Production Server)
