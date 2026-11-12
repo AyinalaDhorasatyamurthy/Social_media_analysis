@@ -4,6 +4,8 @@
 
 It analyzes YouTube channels using **VADER NLP sentiment scoring**, **TF-IDF + NetworkX semantic topology graphs**, **Random Forest reach forecasting**, **K-Means engagement clustering**, **multi-country trending intelligence**, and **category-partitioned creator recommendations**.
 
+[![InsightSphere STUDIO: YouTube Intelligence Unlocked](https://repoclip.io/api/badge/484032f7-f540-4c3c-8142-587c86d9a747)](https://repoclip.io/v/484032f7-f540-4c3c-8142-587c86d9a747)
+
 ---
 
 ## Table of Contents
