@@ -26,6 +26,8 @@ It analyzes YouTube channels using **VADER NLP sentiment scoring**, **TF-IDF + N
 
 ## 1. End-to-End System Architecture
 
+[![Architecture diagram of ayinaladhorasatyamurthy/social_media_analysis](https://gitdiagram.com/ayinaladhorasatyamurthy/social_media_analysis/diagram.png)](https://gitdiagram.com/ayinaladhorasatyamurthy/social_media_analysis?utm_source=readme&utm_medium=picture)
+
 ```text
 +-------------------------------------------------------------------------+
 |                           USER BROWSER (SPA)                            |
